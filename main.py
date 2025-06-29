@@ -22,26 +22,16 @@ def send_telegram_message(text):
     except Exception as e:
         print("❌ Ошибка отправки Telegram-сообщения:", e)
 
-def fetch_historical_prices(days=3):
-    url = "https://api.coingecko.com/api/v3/coins/bitcoin/market_chart"
-    params = {"vs_currency": "usd", "days": days}
-    headers = {"Accept": "application/json", "User-Agent": "Mozilla/5.0"}
-    try:
-        response = requests.get(url, params=params, headers=headers)
-        response.raise_for_status()
-        data = response.json()
-        prices = data.get("prices", [])
-        filtered_prices = []
-        last_time = 0
-        for ts, price in prices:
-            t_min = ts // (5 * 60 * 1000)
-            if t_min != last_time:
-                filtered_prices.append(price)
-                last_time = t_min
-        return filtered_prices
-    except Exception as e:
-        print("❌ Ошибка загрузки истории:", e)
-        return []
+def get_bybit_futures_price():
+    url = "https://api.bybit.com/v5/market/tickers"
+    params = {
+        "category": "linear",
+        "symbol": "BTCUSDT"
+    }
+    response = requests.get(url, params=params)
+    response.raise_for_status()
+    data = response.json()
+    return float(data["result"]["list"][0]["lastPrice"])
 
 def load_state():
     if os.path.exists(STATE_FILE):
@@ -53,23 +43,9 @@ def save_state(state):
     with open(STATE_FILE, "w") as f:
         json.dump(state, f)
 
-def fetch_current_price():
-    try:
-        url = "https://api.coingecko.com/api/v3/simple/price"
-        params = {"ids": "bitcoin", "vs_currencies": "usd"}
-        response = requests.get(url, params=params)
-        response.raise_for_status()
-        data = response.json()
-        return data["bitcoin"]["usd"]
-    except Exception as e:
-        print("❌ Ошибка при получении текущей цены:", e)
-        return None
-
 def check_ema_cross():
     global price_history
-    price = fetch_current_price()
-    if price is None:
-        return
+    price = get_bybit_futures_price()
     price_history.append(price)
     if len(price_history) > 100:
         price_history = price_history[-100:]
@@ -107,11 +83,7 @@ def check_ema_cross():
         print(f"Собрано цен: {len(price_history)} / 21")
 
 def run_bot():
-    global price_history
-    print("Загружаем исторические цены...")
-    price_history = fetch_historical_prices(days=3)
-    print(f"Загружено {len(price_history)} исторических цен.")
-
+    print("Запуск EMA бота с Bybit...")
     while True:
         try:
             check_ema_cross()
@@ -121,7 +93,7 @@ def run_bot():
 
 @app.route("/")
 def home():
-    return "✅ CoinGecko EMA бот активен."
+    return "✅ EMA-бот активен (Bybit Perpetual BTCUSDT)."
 
 @app.route("/test")
 def test_telegram():
