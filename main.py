@@ -1,107 +1,100 @@
 import os
-import time
-import json
 import requests
 import pandas as pd
 from flask import Flask
 from apscheduler.schedulers.background import BackgroundScheduler
-import atexit
 
 app = Flask(__name__)
-STATE_FILE = "ema_state.json"
-price_history = []
 
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+# Telegram credentials from environment
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
+
+# Global state to track previous EMA values
+last_ema10 = None
+last_ema21 = None
+
+current_price = None
+current_ema10 = None
+current_ema21 = None
+last_signal = None
 
 def send_telegram_message(text):
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    data = {"chat_id": TELEGRAM_CHAT_ID, "text": text}
-    try:
-        response = requests.post(url, data=data)
-        response.raise_for_status()
-    except Exception as e:
-        print("❌ Ошибка отправки Telegram-сообщения:", e, flush=True)
+    if TELEGRAM_TOKEN and TELEGRAM_CHAT_ID:
+        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+        payload = {
+            "chat_id": TELEGRAM_CHAT_ID,
+            "text": text
+        }
+        requests.post(url, data=payload)
 
-def get_bybit_futures_price():
-    url = "https://api.bybit.com/v5/market/tickers"
+def fetch_and_check_ema():
+    global last_ema10, last_ema21
+    global current_price, current_ema10, current_ema21, last_signal
+
+    url = "https://api.bybit.com/v5/market/kline"
     params = {
         "category": "linear",
-        "symbol": "BTCUSDT"
+        "symbol": "BTCUSDT",
+        "interval": "5",
+        "limit": 50
     }
+
     response = requests.get(url, params=params)
-    response.raise_for_status()
     data = response.json()
-    return float(data["result"]["list"][0]["lastPrice"])
 
-def load_state():
-    if os.path.exists(STATE_FILE):
-        with open(STATE_FILE, "r") as f:
-            return json.load(f)
-    return {}
+    if "result" not in data or "list" not in data["result"]:
+        print("❌ Ошибка получения данных")
+        return
 
-def save_state(state):
-    with open(STATE_FILE, "w") as f:
-        json.dump(state, f)
+    df = pd.DataFrame(data["result"]["list"])
+    df.columns = ["timestamp", "open", "high", "low", "close", "volume", "turnover"]
+    df["close"] = pd.to_numeric(df["close"])
 
-def check_ema_cross():
-    global price_history
-    try:
-        price = get_bybit_futures_price()
-        price_history.append(price)
-        if len(price_history) > 100:
-            price_history = price_history[-100:]
+    # Calculate EMAs
+    df["ema10"] = df["close"].ewm(span=10).mean()
+    df["ema21"] = df["close"].ewm(span=21).mean()
 
-        if len(price_history) >= 21:
-            df = pd.DataFrame(price_history, columns=["close"])
-            ema10 = df["close"].ewm(span=10, adjust=False).mean()
-            ema21 = df["close"].ewm(span=21, adjust=False).mean()
+    current_price = df["close"].iloc[-1]
+    current_ema10 = df["ema10"].iloc[-1]
+    current_ema21 = df["ema21"].iloc[-1]
 
-            prev_10 = ema10.iloc[-2]
-            prev_21 = ema21.iloc[-2]
-            last_10 = ema10.iloc[-1]
-            last_21 = ema21.iloc[-1]
+    prev_ema10 = df["ema10"].iloc[-2]
+    prev_ema21 = df["ema21"].iloc[-2]
 
-            crossed = None
-            if prev_10 < prev_21 and last_10 > last_21:
-                crossed = "up"
-            elif prev_10 > prev_21 and last_10 < last_21:
-                crossed = "down"
+    signal = None
+    if prev_ema10 < prev_ema21 and current_ema10 > current_ema21:
+        signal = "📈 EMA10 пересек EMA21 снизу вверх — возможный сигнал на покупку!"
+    elif prev_ema10 > prev_ema21 and current_ema10 < current_ema21:
+        signal = "📉 EMA10 пересек EMA21 сверху вниз — возможный сигнал на продажу!"
 
-            state = load_state()
-            last_cross = state.get("cross")
+    if signal and signal != last_signal:
+        send_telegram_message(signal)
+        last_signal = signal
 
-            print(f"[DEBUG] Цена: {price:.2f}, EMA10: {last_10:.2f}, EMA21: {last_21:.2f}", flush=True)
-            print(f"[DEBUG] Предыдущее пересечение: {last_cross}, Новое: {crossed}", flush=True)
-
-            if crossed and crossed != last_cross:
-                emoji = "▲" if crossed == "up" else "▼"
-                send_telegram_message(f"📊 EMA пересечение: {crossed.upper()} {emoji}")
-                state["cross"] = crossed
-                save_state(state)
-            else:
-                print("Нет нового пересечения.", flush=True)
-        else:
-            print(f"Собрано цен: {len(price_history)} / 21", flush=True)
-    except Exception as e:
-        print("❌ Ошибка в check_ema_cross:", e, flush=True)
+    print(f"[OK] Цена: {current_price}, EMA10: {current_ema10}, EMA21: {current_ema21}")
 
 @app.route("/")
 def home():
-    return "✅ EMA-бот активен (Bybit Perpetual BTCUSDT)."
+    return f"""
+    <h1>📊 EMA Бот</h1>
+    <p>Текущая цена BTCUSDT: <strong>{current_price}</strong></p>
+    <p>EMA10: <strong>{current_ema10}</strong></p>
+    <p>EMA21: <strong>{current_ema21}</strong></p>
+    <p>Последний сигнал: <strong>{last_signal}</strong></p>
+    """
 
 @app.route("/test")
-def test_telegram():
-    send_telegram_message("✅ Тестовое уведомление от EMA-бота.")
-    return "Тестовое уведомление отправлено!"
+def test():
+    send_telegram_message("✅ Тестовое сообщение от EMA бота.")
+    return "Сообщение отправлено в Telegram."
 
 if __name__ == "__main__":
+    print("🚀 Запуск EMA бота с Bybit...")
+    fetch_and_check_ema()
+
     scheduler = BackgroundScheduler()
-    scheduler.add_job(check_ema_cross, 'interval', minutes=5)
+    scheduler.add_job(fetch_and_check_ema, "interval", minutes=5)
     scheduler.start()
 
-    import atexit
-    atexit.register(lambda: scheduler.shutdown())
-
-    print("Запуск EMA бота с Bybit...", flush=True)
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 3000)), use_reloader=False)
+    app.run(host="0.0.0.0", port=10000)
