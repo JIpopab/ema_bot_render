@@ -2,4 +2,3 @@ flask
 pandas
 requests
 gunicorn
-apscheduler
