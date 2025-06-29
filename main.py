@@ -1,89 +1,133 @@
 import os
-import pandas as pd
+import time
+import json
+import threading
 import requests
+import pandas as pd
 from flask import Flask
-from apscheduler.schedulers.background import BackgroundScheduler
-
-TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
 app = Flask(__name__)
-scheduler = BackgroundScheduler()
-last_cross = None  # отслеживание последнего сигнала
+STATE_FILE = "ema_state.json"
+price_history = []
 
-def send_telegram_message(message):
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+
+def send_telegram_message(text):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": TELEGRAM_CHAT_ID,
-        "text": message
-    }
+    data = {"chat_id": TELEGRAM_CHAT_ID, "text": text}
     try:
-        r = requests.post(url, json=payload)
-        if r.status_code != 200:
-            print("❌ Ошибка Telegram:", r.text)
+        response = requests.post(url, data=data)
+        response.raise_for_status()
     except Exception as e:
-        print(f"❌ Telegram Error: {e}")
+        print("❌ Ошибка отправки Telegram-сообщения:", e)
 
-def fetch_and_check_ema():
-    global last_cross
-
-    print("🔄 Получение данных с Bybit...")
-    url = "https://api.bybit.com/v5/market/kline"
-    params = {
-        "category": "linear",
-        "symbol": "BTCUSDT",
-        "interval": "5",
-        "limit": 100
-    }
-    headers = {
-        "User-Agent": "EMA-Bot/1.0"
-    }
-
+def fetch_historical_prices(days=3):
+    url = "https://api.coingecko.com/api/v3/coins/bitcoin/market_chart"
+    params = {"vs_currency": "usd", "days": days}
+    headers = {"Accept": "application/json", "User-Agent": "Mozilla/5.0"}
     try:
         response = requests.get(url, params=params, headers=headers)
         response.raise_for_status()
-
-        if not response.text:
-            print("⚠️ Пустой ответ от Bybit")
-            return
-
         data = response.json()
-        if "result" not in data or "list" not in data["result"]:
-            print("⚠️ Странный ответ:", data)
-            return
-
-        candles = data["result"]["list"]
-        closes = [float(c[4]) for c in candles][::-1]
-
-        price = closes[-1]
-        ema10 = pd.Series(closes).ewm(span=10).mean().iloc[-1]
-        ema21 = pd.Series(closes).ewm(span=21).mean().iloc[-1]
-
-        print(f"📊 Цена: {price:.2f} | EMA10: {ema10:.2f} | EMA21: {ema21:.2f}")
-
-        if ema10 > ema21 and last_cross != "up":
-            send_telegram_message(f"🟢 EMA10 ({ema10:.2f}) пересек EMA21 ({ema21:.2f}) вверх\nЦена: {price:.2f}")
-            last_cross = "up"
-        elif ema10 < ema21 and last_cross != "down":
-            send_telegram_message(f"🔴 EMA10 ({ema10:.2f}) пересек EMA21 ({ema21:.2f}) вниз\nЦена: {price:.2f}")
-            last_cross = "down"
-        else:
-            print("⏸️ Нет нового пересечения")
-
-    except requests.exceptions.RequestException as e:
-        print(f"❌ Request error: {e}")
+        prices = data.get("prices", [])
+        filtered_prices = []
+        last_time = 0
+        for ts, price in prices:
+            t_min = ts // (5 * 60 * 1000)
+            if t_min != last_time:
+                filtered_prices.append(price)
+                last_time = t_min
+        return filtered_prices
     except Exception as e:
-        print(f"❌ Ошибка: {e}")
+        print("❌ Ошибка загрузки истории:", e)
+        return []
+
+def load_state():
+    if os.path.exists(STATE_FILE):
+        with open(STATE_FILE, "r") as f:
+            return json.load(f)
+    return {}
+
+def save_state(state):
+    with open(STATE_FILE, "w") as f:
+        json.dump(state, f)
+
+def fetch_current_price():
+    try:
+        url = "https://api.coingecko.com/api/v3/simple/price"
+        params = {"ids": "bitcoin", "vs_currencies": "usd"}
+        response = requests.get(url, params=params)
+        response.raise_for_status()
+        data = response.json()
+        return data["bitcoin"]["usd"]
+    except Exception as e:
+        print("❌ Ошибка при получении текущей цены:", e)
+        return None
+
+def check_ema_cross():
+    global price_history
+    price = fetch_current_price()
+    if price is None:
+        return
+    price_history.append(price)
+    if len(price_history) > 100:
+        price_history = price_history[-100:]
+
+    if len(price_history) >= 21:
+        df = pd.DataFrame(price_history, columns=["close"])
+        ema10 = df["close"].ewm(span=10, adjust=False).mean()
+        ema21 = df["close"].ewm(span=21, adjust=False).mean()
+
+        prev_10 = ema10.iloc[-2]
+        prev_21 = ema21.iloc[-2]
+        last_10 = ema10.iloc[-1]
+        last_21 = ema21.iloc[-1]
+
+        crossed = None
+        if prev_10 < prev_21 and last_10 > last_21:
+            crossed = "up"
+        elif prev_10 > prev_21 and last_10 < last_21:
+            crossed = "down"
+
+        state = load_state()
+        last_cross = state.get("cross")
+
+        print(f"[DEBUG] Цена: {price:.2f}, EMA10: {last_10:.2f}, EMA21: {last_21:.2f}")
+        print(f"[DEBUG] Предыдущее пересечение: {last_cross}, Новое: {crossed}")
+
+        if crossed and crossed != last_cross:
+            emoji = "▲" if crossed == "up" else "▼"
+            send_telegram_message(f"📊 EMA пересечение: {crossed.upper()} {emoji}")
+            state["cross"] = crossed
+            save_state(state)
+        else:
+            print("Нет нового пересечения.")
+    else:
+        print(f"Собрано цен: {len(price_history)} / 21")
+
+def run_bot():
+    global price_history
+    print("Загружаем исторические цены...")
+    price_history = fetch_historical_prices(days=3)
+    print(f"Загружено {len(price_history)} исторических цен.")
+
+    while True:
+        try:
+            check_ema_cross()
+        except Exception as e:
+            print("❌ Ошибка в боте:", e)
+        time.sleep(300)
 
 @app.route("/")
-def index():
-    return "✅ EMA Bot работает"
+def home():
+    return "✅ CoinGecko EMA бот активен."
 
-# стартуем задачу каждую минуту
-scheduler.add_job(fetch_and_check_ema, "interval", minutes=1)
-scheduler.start()
+@app.route("/test")
+def test_telegram():
+    send_telegram_message("✅ Тестовое уведомление от EMA-бота.")
+    return "Тестовое уведомление отправлено!"
 
 if __name__ == "__main__":
-    print("🚀 Запуск EMA бота с Bybit...")
-    fetch_and_check_ema()  # первый запуск вручную
-    app.run(host="0.0.0.0", port=5000)
+    threading.Thread(target=run_bot, daemon=True).start()
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 3000)))
