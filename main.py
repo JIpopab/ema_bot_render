@@ -1,100 +1,89 @@
 import os
-import requests
 import pandas as pd
+import requests
 from flask import Flask
 from apscheduler.schedulers.background import BackgroundScheduler
 
-app = Flask(__name__)
-
-# Telegram credentials from environment
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
-# Global state to track previous EMA values
-last_ema10 = None
-last_ema21 = None
+app = Flask(__name__)
+scheduler = BackgroundScheduler()
+last_cross = None  # отслеживание последнего сигнала
 
-current_price = None
-current_ema10 = None
-current_ema21 = None
-last_signal = None
-
-def send_telegram_message(text):
-    if TELEGRAM_TOKEN and TELEGRAM_CHAT_ID:
-        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-        payload = {
-            "chat_id": TELEGRAM_CHAT_ID,
-            "text": text
-        }
-        requests.post(url, data=payload)
+def send_telegram_message(message):
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": message
+    }
+    try:
+        r = requests.post(url, json=payload)
+        if r.status_code != 200:
+            print("❌ Ошибка Telegram:", r.text)
+    except Exception as e:
+        print(f"❌ Telegram Error: {e}")
 
 def fetch_and_check_ema():
-    global last_ema10, last_ema21
-    global current_price, current_ema10, current_ema21, last_signal
+    global last_cross
 
+    print("🔄 Получение данных с Bybit...")
     url = "https://api.bybit.com/v5/market/kline"
     params = {
         "category": "linear",
         "symbol": "BTCUSDT",
         "interval": "5",
-        "limit": 50
+        "limit": 100
+    }
+    headers = {
+        "User-Agent": "EMA-Bot/1.0"
     }
 
-    response = requests.get(url, params=params)
-    data = response.json()
+    try:
+        response = requests.get(url, params=params, headers=headers)
+        response.raise_for_status()
 
-    if "result" not in data or "list" not in data["result"]:
-        print("❌ Ошибка получения данных")
-        return
+        if not response.text:
+            print("⚠️ Пустой ответ от Bybit")
+            return
 
-    df = pd.DataFrame(data["result"]["list"])
-    df.columns = ["timestamp", "open", "high", "low", "close", "volume", "turnover"]
-    df["close"] = pd.to_numeric(df["close"])
+        data = response.json()
+        if "result" not in data or "list" not in data["result"]:
+            print("⚠️ Странный ответ:", data)
+            return
 
-    # Calculate EMAs
-    df["ema10"] = df["close"].ewm(span=10).mean()
-    df["ema21"] = df["close"].ewm(span=21).mean()
+        candles = data["result"]["list"]
+        closes = [float(c[4]) for c in candles][::-1]
 
-    current_price = df["close"].iloc[-1]
-    current_ema10 = df["ema10"].iloc[-1]
-    current_ema21 = df["ema21"].iloc[-1]
+        price = closes[-1]
+        ema10 = pd.Series(closes).ewm(span=10).mean().iloc[-1]
+        ema21 = pd.Series(closes).ewm(span=21).mean().iloc[-1]
 
-    prev_ema10 = df["ema10"].iloc[-2]
-    prev_ema21 = df["ema21"].iloc[-2]
+        print(f"📊 Цена: {price:.2f} | EMA10: {ema10:.2f} | EMA21: {ema21:.2f}")
 
-    signal = None
-    if prev_ema10 < prev_ema21 and current_ema10 > current_ema21:
-        signal = "📈 EMA10 пересек EMA21 снизу вверх — возможный сигнал на покупку!"
-    elif prev_ema10 > prev_ema21 and current_ema10 < current_ema21:
-        signal = "📉 EMA10 пересек EMA21 сверху вниз — возможный сигнал на продажу!"
+        if ema10 > ema21 and last_cross != "up":
+            send_telegram_message(f"🟢 EMA10 ({ema10:.2f}) пересек EMA21 ({ema21:.2f}) вверх\nЦена: {price:.2f}")
+            last_cross = "up"
+        elif ema10 < ema21 and last_cross != "down":
+            send_telegram_message(f"🔴 EMA10 ({ema10:.2f}) пересек EMA21 ({ema21:.2f}) вниз\nЦена: {price:.2f}")
+            last_cross = "down"
+        else:
+            print("⏸️ Нет нового пересечения")
 
-    if signal and signal != last_signal:
-        send_telegram_message(signal)
-        last_signal = signal
-
-    print(f"[OK] Цена: {current_price}, EMA10: {current_ema10}, EMA21: {current_ema21}")
+    except requests.exceptions.RequestException as e:
+        print(f"❌ Request error: {e}")
+    except Exception as e:
+        print(f"❌ Ошибка: {e}")
 
 @app.route("/")
-def home():
-    return f"""
-    <h1>📊 EMA Бот</h1>
-    <p>Текущая цена BTCUSDT: <strong>{current_price}</strong></p>
-    <p>EMA10: <strong>{current_ema10}</strong></p>
-    <p>EMA21: <strong>{current_ema21}</strong></p>
-    <p>Последний сигнал: <strong>{last_signal}</strong></p>
-    """
+def index():
+    return "✅ EMA Bot работает"
 
-@app.route("/test")
-def test():
-    send_telegram_message("✅ Тестовое сообщение от EMA бота.")
-    return "Сообщение отправлено в Telegram."
+# стартуем задачу каждую минуту
+scheduler.add_job(fetch_and_check_ema, "interval", minutes=1)
+scheduler.start()
 
 if __name__ == "__main__":
     print("🚀 Запуск EMA бота с Bybit...")
-    fetch_and_check_ema()
-
-    scheduler = BackgroundScheduler()
-    scheduler.add_job(fetch_and_check_ema, "interval", minutes=5)
-    scheduler.start()
-
-    app.run(host="0.0.0.0", port=10000)
+    fetch_and_check_ema()  # первый запуск вручную
+    app.run(host="0.0.0.0", port=5000)
