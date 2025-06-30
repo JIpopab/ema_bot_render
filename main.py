@@ -8,7 +8,6 @@ from flask import Flask
 
 app = Flask(__name__)
 STATE_FILE = "ema_state.json"
-price_history = []
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
@@ -22,16 +21,19 @@ def send_telegram_message(text):
     except Exception as e:
         print("❌ Ошибка отправки Telegram-сообщения:", e)
 
-def get_bybit_futures_price():
-    url = "https://api.bybit.com/v5/market/tickers"
+def get_price_history():
+    url = "https://api.bybit.com/v5/market/kline"
     params = {
         "category": "linear",
-        "symbol": "BTCUSDT"
+        "symbol": "BTCUSDT",
+        "interval": "5",  # 5-minute candles
+        "limit": 100
     }
     response = requests.get(url, params=params)
     response.raise_for_status()
     data = response.json()
-    return float(data["result"]["list"][0]["lastPrice"])
+    # Возвращаем список цен закрытия свечей
+    return [float(item[4]) for item in data["result"]["list"]]  # item[4] = close
 
 def load_state():
     if os.path.exists(STATE_FILE):
@@ -44,56 +46,57 @@ def save_state(state):
         json.dump(state, f)
 
 def check_ema_cross():
-    global price_history
-    price = get_bybit_futures_price()
-    price_history.append(price)
-    if len(price_history) > 100:
-        price_history = price_history[-100:]
+    try:
+        closes = get_price_history()
+    except Exception as e:
+        print("❌ Ошибка при получении истории свечей:", e)
+        return
 
-    if len(price_history) >= 21:
-        df = pd.DataFrame(price_history, columns=["close"])
-        ema10 = df["close"].ewm(span=10, adjust=False).mean()
-        ema21 = df["close"].ewm(span=21, adjust=False).mean()
+    if len(closes) < 21:
+        print(f"Недостаточно данных для EMA (только {len(closes)} точек)")
+        return
 
-        prev_10 = ema10.iloc[-2]
-        prev_21 = ema21.iloc[-2]
-        last_10 = ema10.iloc[-1]
-        last_21 = ema21.iloc[-1]
+    df = pd.DataFrame(closes, columns=["close"])
+    ema10 = df["close"].ewm(span=10, adjust=False).mean()
+    ema21 = df["close"].ewm(span=21, adjust=False).mean()
 
-        crossed = None
-        if prev_10 < prev_21 and last_10 > last_21:
-            crossed = "up"
-        elif prev_10 > prev_21 and last_10 < last_21:
-            crossed = "down"
+    prev_10 = ema10.iloc[-2]
+    prev_21 = ema21.iloc[-2]
+    last_10 = ema10.iloc[-1]
+    last_21 = ema21.iloc[-1]
 
-        state = load_state()
-        last_cross = state.get("cross")
+    crossed = None
+    if prev_10 < prev_21 and last_10 > last_21:
+        crossed = "up"
+    elif prev_10 > prev_21 and last_10 < last_21:
+        crossed = "down"
 
-        print(f"[DEBUG] Цена: {price:.2f}, EMA10: {last_10:.2f}, EMA21: {last_21:.2f}")
-        print(f"[DEBUG] Предыдущее пересечение: {last_cross}, Новое: {crossed}")
+    state = load_state()
+    last_cross = state.get("cross")
 
-        if crossed and crossed != last_cross:
-            emoji = "▲" if crossed == "up" else "▼"
-            send_telegram_message(f"📊 EMA пересечение: {crossed.upper()} {emoji}")
-            state["cross"] = crossed
-            save_state(state)
-        else:
-            print("Нет нового пересечения.")
+    print(f"[DEBUG] EMA10: {last_10:.2f}, EMA21: {last_21:.2f}")
+    print(f"[DEBUG] Предыдущее пересечение: {last_cross}, Новое: {crossed}")
+
+    if crossed and crossed != last_cross:
+        emoji = "▲" if crossed == "up" else "▼"
+        send_telegram_message(f"📊 EMA пересечение: {crossed.upper()} {emoji}")
+        state["cross"] = crossed
+        save_state(state)
     else:
-        print(f"Собрано цен: {len(price_history)} / 21")
+        print("Нет нового пересечения.")
 
 def run_bot():
-    print("Запуск EMA бота с Bybit...")
+    print("Запуск EMA бота с Bybit (5m TF)...")
     while True:
         try:
             check_ema_cross()
         except Exception as e:
             print("❌ Ошибка в боте:", e)
-        time.sleep(300)
+        time.sleep(300)  # каждые 5 минут
 
 @app.route("/")
 def home():
-    return "✅ EMA-бот активен (Bybit Perpetual BTCUSDT)."
+    return "✅ EMA-бот активен (Bybit Perpetual BTCUSDT, 5m)."
 
 @app.route("/test")
 def test_telegram():
