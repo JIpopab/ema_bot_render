@@ -1,9 +1,10 @@
 import os
-import time
 import json
+import time
 import threading
 import requests
 import pandas as pd
+from datetime import datetime
 from flask import Flask
 
 app = Flask(__name__)
@@ -37,7 +38,8 @@ def get_candlestick_data():
     if data.get("code") != "0":
         raise Exception(f"OKX API error: {data.get('msg')}")
 
-    closes = [float(candle[4]) for candle in reversed(data["data"])]  # ⬅️ reverse to chronological order
+    closes = [float(candle[4]) for candle in data["data"]]
+    closes.reverse()  # OKX returns candles from newest to oldest
     return closes
 
 
@@ -76,8 +78,8 @@ def check_ema_cross():
         state = load_state()
         last_cross = state.get("cross")
 
-        now = time.strftime('%Y-%m-%d %H:%M:%S')
-        print(f"\n🕒 [{now}]")
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        print(f"🕒 [{now}]")
         print(f"📈 Цена: {last_price:.2f}")
         print(f"EMA10: {last_10:.2f}, EMA21: {last_21:.2f}")
         print(f"🔄 Пересечение: {'↑ up' if crossed == 'up' else '↓ down' if crossed == 'down' else '– нет'}")
@@ -89,33 +91,32 @@ def check_ema_cross():
             state["cross"] = crossed
             save_state(state)
         else:
-            print("ℹ️ Нового пересечения нет.")
+            print("ℹ️ Нового пересечения нет. Просто наблюдаем.")
     else:
         print(f"⚠️ Недостаточно данных: {len(closes)} / 21")
 
 
+def wait_for_next_interval():
+    now = datetime.utcnow()
+    seconds = (now.minute % 5) * 60 + now.second
+    wait_time = 300 - seconds
+    print(f"⏳ Ждём до ближайшего 5-минутного интервала: {wait_time:.0f} сек...")
+    time.sleep(wait_time)
+
+
 def run_bot():
     print("🚀 EMA-бот запущен. Ожидаем первого срабатывания...")
+    wait_for_next_interval()
 
     while True:
         try:
             check_ema_cross()
         except Exception as e:
             print("❌ Ошибка в боте:", e)
-
-        # ⏱ Ждать до ближайшего ровного 5-минутного таймстемпа
-        now = time.localtime()
-        sleep_seconds = (300 - (now.tm_min % 5) * 60 - now.tm_sec)
-        next_run = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(time.time() + sleep_seconds))
-        print(f"⏳ Следующая проверка в {next_run} (через {sleep_seconds} секунд)\n")
-        time.sleep(sleep_seconds)
+        print("⏳ Следующая проверка через 5 минут...\n")
+        time.sleep(300)
 
 
-# ✅ Запуск бота на старте импорта (нужно для Render)
-threading.Thread(target=run_bot, daemon=True).start()
-
-
-# 🌐 Flask API
 @app.route("/")
 def home():
     return "✅ EMA-бот активен (OKX Perpetual BTCUSDT, 5m TF)."
@@ -125,3 +126,7 @@ def home():
 def test_telegram():
     send_telegram_message("✅ Тестовое уведомление от EMA-бота.")
     return "Тестовое уведомление отправлено!"
+
+
+# 🧠 Запуск фонового бота при старте модуля (совместимо с gunicorn)
+threading.Thread(target=run_bot, daemon=True).start()
