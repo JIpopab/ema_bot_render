@@ -9,11 +9,10 @@ from flask import Flask
 app = Flask(__name__)
 STATE_FILE = "ema_state.json"
 
-# Чтение переменных окружения
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-# Функция отправки сообщений в Telegram
+
 def send_telegram_message(text):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     data = {"chat_id": TELEGRAM_CHAT_ID, "text": text}
@@ -23,7 +22,7 @@ def send_telegram_message(text):
     except Exception as e:
         print("❌ Ошибка отправки Telegram-сообщения:", e)
 
-# Получение 5m свечей с OKX
+
 def get_candlestick_data():
     url = "https://www.okx.com/api/v5/market/candles"
     params = {
@@ -38,23 +37,22 @@ def get_candlestick_data():
     if data.get("code") != "0":
         raise Exception(f"OKX API error: {data.get('msg')}")
 
-    # OKX возвращает свечи в порядке от новых к старым — разворачиваем
-    closes = [float(candle[4]) for candle in reversed(data["data"])]
+    closes = [float(candle[4]) for candle in reversed(data["data"])]  # ⬅️ reverse to chronological order
     return closes
 
-# Загрузка состояния из файла
+
 def load_state():
     if os.path.exists(STATE_FILE):
         with open(STATE_FILE, "r") as f:
             return json.load(f)
     return {}
 
-# Сохранение состояния
+
 def save_state(state):
     with open(STATE_FILE, "w") as f:
         json.dump(state, f)
 
-# Основная логика проверки пересечений EMA
+
 def check_ema_cross():
     closes = get_candlestick_data()
 
@@ -78,7 +76,8 @@ def check_ema_cross():
         state = load_state()
         last_cross = state.get("cross")
 
-        print(f"🕒 [{time.strftime('%Y-%m-%d %H:%M:%S')}]")
+        now = time.strftime('%Y-%m-%d %H:%M:%S')
+        print(f"\n🕒 [{now}]")
         print(f"📈 Цена: {last_price:.2f}")
         print(f"EMA10: {last_10:.2f}, EMA21: {last_21:.2f}")
         print(f"🔄 Пересечение: {'↑ up' if crossed == 'up' else '↓ down' if crossed == 'down' else '– нет'}")
@@ -90,39 +89,39 @@ def check_ema_cross():
             state["cross"] = crossed
             save_state(state)
         else:
-            print("ℹ️ Нового пересечения нет. Просто наблюдаем.")
+            print("ℹ️ Нового пересечения нет.")
     else:
         print(f"⚠️ Недостаточно данных: {len(closes)} / 21")
 
-# Цикл бота с таймингом по кратным 5 минутам
+
 def run_bot():
-    print("🚀 Запуск EMA бота с OKX (5m TF)...")
+    print("🚀 EMA-бот запущен. Ожидаем первого срабатывания...")
+
     while True:
         try:
             check_ema_cross()
         except Exception as e:
             print("❌ Ошибка в боте:", e)
 
-        now = time.time()
-        next_minute = ((int(now) // 60 // 5) + 1) * 5 * 60
-        sleep_time = next_minute - now
+        # ⏱ Ждать до ближайшего ровного 5-минутного таймстемпа
+        now = time.localtime()
+        sleep_seconds = (300 - (now.tm_min % 5) * 60 - now.tm_sec)
+        next_run = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(time.time() + sleep_seconds))
+        print(f"⏳ Следующая проверка в {next_run} (через {sleep_seconds} секунд)\n")
+        time.sleep(sleep_seconds)
 
-        next_ts = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(next_minute))
-        print(f"⏳ Ожидание до {next_ts}...\n")
 
-        time.sleep(sleep_time)
+# ✅ Запуск бота на старте импорта (нужно для Render)
+threading.Thread(target=run_bot, daemon=True).start()
 
-# Flask routes
+
+# 🌐 Flask API
 @app.route("/")
 def home():
-    return "✅ EMA-бот активен (OKX BTC-USDT-SWAP, 5m TF)."
+    return "✅ EMA-бот активен (OKX Perpetual BTCUSDT, 5m TF)."
+
 
 @app.route("/test")
 def test_telegram():
     send_telegram_message("✅ Тестовое уведомление от EMA-бота.")
     return "Тестовое уведомление отправлено!"
-
-# Точка входа
-if __name__ == "__main__":
-    threading.Thread(target=run_bot, daemon=True).start()
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 3000)))
