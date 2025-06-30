@@ -22,17 +22,20 @@ def send_telegram_message(text):
         print("❌ Ошибка отправки Telegram-сообщения:", e)
 
 def get_candlestick_data():
-    url = "https://api.bybit.com/v5/market/kline"
+    url = "https://www.okx.com/api/v5/market/candles"
     params = {
-        "category": "linear",
-        "symbol": "BTCUSDT",
-        "interval": "5",
+        "instId": "BTC-USDT-SWAP",
+        "bar": "5m",
         "limit": 100
     }
     response = requests.get(url, params=params)
     response.raise_for_status()
     data = response.json()
-    closes = [float(candle[4]) for candle in data["result"]["list"]]  # close prices
+
+    if data.get("code") != "0":
+        raise Exception(f"OKX API error: {data.get('msg')}")
+
+    closes = [float(candle[4]) for candle in data["data"]]
     return closes
 
 def load_state():
