@@ -9,9 +9,11 @@ from flask import Flask
 app = Flask(__name__)
 STATE_FILE = "ema_state.json"
 
+# Чтение переменных окружения
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
+# Функция отправки сообщений в Telegram
 def send_telegram_message(text):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     data = {"chat_id": TELEGRAM_CHAT_ID, "text": text}
@@ -21,6 +23,7 @@ def send_telegram_message(text):
     except Exception as e:
         print("❌ Ошибка отправки Telegram-сообщения:", e)
 
+# Получение 5m свечей с OKX
 def get_candlestick_data():
     url = "https://www.okx.com/api/v5/market/candles"
     params = {
@@ -35,20 +38,23 @@ def get_candlestick_data():
     if data.get("code") != "0":
         raise Exception(f"OKX API error: {data.get('msg')}")
 
-    # Загрузка данных в обратном порядке, чтобы последние данные шли первыми
+    # OKX возвращает свечи в порядке от новых к старым — разворачиваем
     closes = [float(candle[4]) for candle in reversed(data["data"])]
     return closes
 
+# Загрузка состояния из файла
 def load_state():
     if os.path.exists(STATE_FILE):
         with open(STATE_FILE, "r") as f:
             return json.load(f)
     return {}
 
+# Сохранение состояния
 def save_state(state):
     with open(STATE_FILE, "w") as f:
         json.dump(state, f)
 
+# Основная логика проверки пересечений EMA
 def check_ema_cross():
     closes = get_candlestick_data()
 
@@ -88,6 +94,7 @@ def check_ema_cross():
     else:
         print(f"⚠️ Недостаточно данных: {len(closes)} / 21")
 
+# Цикл бота с таймингом по кратным 5 минутам
 def run_bot():
     print("🚀 Запуск EMA бота с OKX (5m TF)...")
     while True:
@@ -95,18 +102,27 @@ def run_bot():
             check_ema_cross()
         except Exception as e:
             print("❌ Ошибка в боте:", e)
-        print("⏳ Ожидание 5 минут...\n")
-        time.sleep(300)
 
+        now = time.time()
+        next_minute = ((int(now) // 60 // 5) + 1) * 5 * 60
+        sleep_time = next_minute - now
+
+        next_ts = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(next_minute))
+        print(f"⏳ Ожидание до {next_ts}...\n")
+
+        time.sleep(sleep_time)
+
+# Flask routes
 @app.route("/")
 def home():
-    return "✅ EMA-бот активен (OKX Perpetual BTCUSDT, 5m TF)."
+    return "✅ EMA-бот активен (OKX BTC-USDT-SWAP, 5m TF)."
 
 @app.route("/test")
 def test_telegram():
     send_telegram_message("✅ Тестовое уведомление от EMA-бота.")
     return "Тестовое уведомление отправлено!"
 
+# Точка входа
 if __name__ == "__main__":
     threading.Thread(target=run_bot, daemon=True).start()
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 3000)))
