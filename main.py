@@ -21,19 +21,19 @@ def send_telegram_message(text):
     except Exception as e:
         print("❌ Ошибка отправки Telegram-сообщения:", e)
 
-def get_price_history():
+def get_candlestick_data():
     url = "https://api.bybit.com/v5/market/kline"
     params = {
         "category": "linear",
         "symbol": "BTCUSDT",
-        "interval": "5",  # 5-minute candles
+        "interval": "5",
         "limit": 100
     }
     response = requests.get(url, params=params)
     response.raise_for_status()
     data = response.json()
-    # Возвращаем список цен закрытия свечей
-    return [float(item[4]) for item in data["result"]["list"]]  # item[4] = close
+    closes = [float(candle[4]) for candle in data["result"]["list"]]  # close prices
+    return closes
 
 def load_state():
     if os.path.exists(STATE_FILE):
@@ -46,57 +46,57 @@ def save_state(state):
         json.dump(state, f)
 
 def check_ema_cross():
-    try:
-        closes = get_price_history()
-    except Exception as e:
-        print("❌ Ошибка при получении истории свечей:", e)
-        return
+    closes = get_candlestick_data()
 
-    if len(closes) < 21:
-        print(f"Недостаточно данных для EMA (только {len(closes)} точек)")
-        return
+    if len(closes) >= 21:
+        df = pd.DataFrame(closes, columns=["close"])
+        ema10 = df["close"].ewm(span=10, adjust=False).mean()
+        ema21 = df["close"].ewm(span=21, adjust=False).mean()
 
-    df = pd.DataFrame(closes, columns=["close"])
-    ema10 = df["close"].ewm(span=10, adjust=False).mean()
-    ema21 = df["close"].ewm(span=21, adjust=False).mean()
+        prev_10 = ema10.iloc[-2]
+        prev_21 = ema21.iloc[-2]
+        last_10 = ema10.iloc[-1]
+        last_21 = ema21.iloc[-1]
+        last_price = closes[-1]
 
-    prev_10 = ema10.iloc[-2]
-    prev_21 = ema21.iloc[-2]
-    last_10 = ema10.iloc[-1]
-    last_21 = ema21.iloc[-1]
+        crossed = None
+        if prev_10 < prev_21 and last_10 > last_21:
+            crossed = "up"
+        elif prev_10 > prev_21 and last_10 < last_21:
+            crossed = "down"
 
-    crossed = None
-    if prev_10 < prev_21 and last_10 > last_21:
-        crossed = "up"
-    elif prev_10 > prev_21 and last_10 < last_21:
-        crossed = "down"
+        state = load_state()
+        last_cross = state.get("cross")
 
-    state = load_state()
-    last_cross = state.get("cross")
+        print(f"🕒 [{time.strftime('%Y-%m-%d %H:%M:%S')}]")
+        print(f"📈 Цена: {last_price:.2f}")
+        print(f"EMA10: {last_10:.2f}, EMA21: {last_21:.2f}")
+        print(f"🔄 Пересечение: {'↑ up' if crossed == 'up' else '↓ down' if crossed == 'down' else '– нет'}")
+        print(f"💾 Сохранённое предыдущее: {last_cross}")
 
-    print(f"[DEBUG] EMA10: {last_10:.2f}, EMA21: {last_21:.2f}")
-    print(f"[DEBUG] Предыдущее пересечение: {last_cross}, Новое: {crossed}")
-
-    if crossed and crossed != last_cross:
-        emoji = "▲" if crossed == "up" else "▼"
-        send_telegram_message(f"📊 EMA пересечение: {crossed.upper()} {emoji}")
-        state["cross"] = crossed
-        save_state(state)
+        if crossed and crossed != last_cross:
+            emoji = "▲" if crossed == "up" else "▼"
+            send_telegram_message(f"📊 EMA пересечение: {crossed.upper()} {emoji}")
+            state["cross"] = crossed
+            save_state(state)
+        else:
+            print("ℹ️ Нового пересечения нет. Просто наблюдаем.")
     else:
-        print("Нет нового пересечения.")
+        print(f"⚠️ Недостаточно данных: {len(closes)} / 21")
 
 def run_bot():
-    print("Запуск EMA бота с Bybit (5m TF)...")
+    print("🚀 Запуск EMA бота с Bybit (5m TF)...")
     while True:
         try:
             check_ema_cross()
         except Exception as e:
             print("❌ Ошибка в боте:", e)
-        time.sleep(300)  # каждые 5 минут
+        print("⏳ Ожидание 5 минут...\n")
+        time.sleep(300)
 
 @app.route("/")
 def home():
-    return "✅ EMA-бот активен (Bybit Perpetual BTCUSDT, 5m)."
+    return "✅ EMA-бот активен (Bybit Perpetual BTCUSDT, 5m TF)."
 
 @app.route("/test")
 def test_telegram():
