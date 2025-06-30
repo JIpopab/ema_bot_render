@@ -35,7 +35,8 @@ def get_candlestick_data():
     if data.get("code") != "0":
         raise Exception(f"OKX API error: {data.get('msg')}")
 
-    closes = [float(candle[4]) for candle in data["data"]]
+    # Загрузка данных в обратном порядке, чтобы последние данные шли первыми
+    closes = [float(candle[4]) for candle in reversed(data["data"])]
     return closes
 
 def load_state():
@@ -88,7 +89,7 @@ def check_ema_cross():
         print(f"⚠️ Недостаточно данных: {len(closes)} / 21")
 
 def run_bot():
-    print("🚀 Запуск EMA бота с Bybit (5m TF)...")
+    print("🚀 Запуск EMA бота с OKX (5m TF)...")
     while True:
         try:
             check_ema_cross()
@@ -99,7 +100,7 @@ def run_bot():
 
 @app.route("/")
 def home():
-    return "✅ EMA-бот активен (Bybit Perpetual BTCUSDT, 5m TF)."
+    return "✅ EMA-бот активен (OKX Perpetual BTCUSDT, 5m TF)."
 
 @app.route("/test")
 def test_telegram():
