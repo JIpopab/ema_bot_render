@@ -15,7 +15,7 @@ LOG_FILE = "ema_bot.log"
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-# 🔧 Настройка логирования
+# 🔧 Настройка логов
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -77,46 +77,50 @@ def check_ema_realtime():
 
     closes[-1] = live_price
 
-    if len(closes) >= 21:
+    if len(closes) >= 22:
         df = pd.DataFrame(closes, columns=["close"])
         ema10 = df["close"].ewm(span=10, adjust=False).mean()
         ema21 = df["close"].ewm(span=21, adjust=False).mean()
 
-        last_10 = ema10.iloc[-1]
-        last_21 = ema21.iloc[-1]
+        ema10_prev = ema10.iloc[-2]
+        ema21_prev = ema21.iloc[-2]
+        ema10_curr = ema10.iloc[-1]
+        ema21_curr = ema21.iloc[-1]
 
         state = load_state()
         last_event = state.get("event")
 
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        logging.info(f"🕒 [{now}] Цена: {live_price:.2f} | EMA10: {last_10:.2f}, EMA21: {last_21:.2f}")
-
-        crossed = None
-        if last_10 > last_21:
-            crossed = "up"
-        elif last_10 < last_21:
-            crossed = "down"
-        elif abs(last_10 - last_21) < 0.5:
-            crossed = "touch"
-
-        logging.info(f"🔄 Обнаружено событие: {crossed}")
+        logging.info(f"🕒 [{now}] Цена: {live_price:.2f} | EMA10: {ema10_curr:.2f}, EMA21: {ema21_curr:.2f}")
 
         price_str = f"{live_price:,.2f} $"
+        crossed = None
 
-        if crossed == "touch":
+        # Касание EMA
+        if abs(ema10_curr - ema21_curr) < 0.5:
+            crossed = "touch"
             send_telegram_message(f"⚡ EMA касание: EMA10 ≈ EMA21 по цене {price_str}")
-            # не записываем в state, чтобы касания могли повторяться
-        elif crossed != last_event:
-            if crossed == "up":
+
+        # Пересечение вверх
+        elif ema10_prev < ema21_prev and ema10_curr > ema21_curr:
+            crossed = "up"
+            if last_event != crossed:
                 send_telegram_message(f"📈 EMA пересечение: ВВЕРХ ▲ по цене {price_str}")
-            elif crossed == "down":
+                state["event"] = crossed
+                save_state(state)
+
+        # Пересечение вниз
+        elif ema10_prev > ema21_prev and ema10_curr < ema21_curr:
+            crossed = "down"
+            if last_event != crossed:
                 send_telegram_message(f"📉 EMA пересечение: ВНИЗ ▼ по цене {price_str}")
-            state["event"] = crossed
-            save_state(state)
+                state["event"] = crossed
+                save_state(state)
+
         else:
-            logging.info("ℹ️ Нет изменений EMA. Просто наблюдаем.")
+            logging.info("ℹ️ EMA не пересекаются. Просто наблюдаем.")
     else:
-        logging.warning(f"⚠️ Недостаточно данных: {len(closes)} / 21")
+        logging.warning(f"⚠️ Недостаточно данных: {len(closes)} / 22")
 
 def run_bot():
     logging.info("🚀 EMA-бот запущен. Мониторим каждые 60 секунд...")
@@ -128,7 +132,6 @@ def run_bot():
         logging.info("⏳ Следующая проверка через 1 минуту...\n")
         time.sleep(60)
 
-# 🌐 Flask routes
 @app.route("/")
 def home():
     return "✅ EMA-бот активен (OKX BTCUSDT, 5m TF, реальное время)."
@@ -143,10 +146,10 @@ def status():
     state = load_state()
     return f"📊 Последнее EMA-событие: {state.get('event', 'неизвестно')}"
 
-# 🧠 Фоновый запуск (для Render и других хостингов)
+# 🧠 Фоновый поток
 threading.Thread(target=run_bot, daemon=True).start()
 
-# ✅ Flask app run (с поддержкой PORT из окружения)
+# 🌐 Запуск Flask-сервера с учётом Render / Heroku
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
