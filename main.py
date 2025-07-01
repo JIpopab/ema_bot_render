@@ -102,12 +102,13 @@ def check_ema_realtime():
         print(f"🔄 Обнаружено: {crossed}")
 
         if crossed != last_event:
+            price_str = f"{live_price:,.2f} $"
             if crossed == "touch":
-                send_telegram_message("⚡ EMA касание: EMA10 ≈ EMA21 (возможное пересечение)")
+                send_telegram_message(f"⚡ EMA касание: EMA10 ≈ EMA21 по цене {price_str}")
             elif crossed == "up":
-                send_telegram_message("📈 EMA пересечение: ВВЕРХ ▲")
+                send_telegram_message(f"📈 EMA пересечение: ВВЕРХ ▲ по цене {price_str}")
             elif crossed == "down":
-                send_telegram_message("📉 EMA пересечение: ВНИЗ ▼")
+                send_telegram_message(f"📉 EMA пересечение: ВНИЗ ▼ по цене {price_str}")
             
             state["event"] = crossed
             save_state(state)
