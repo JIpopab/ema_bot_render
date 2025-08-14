@@ -1,15 +1,13 @@
-
+# main.py (updated)
 import os
 import json
 import time
 import threading
 import logging
-from datetime import datetime
-from flask import Flask
+from flask import Flask, jsonify
 
 from bot.config import (
     TIMEFRAMES, STATE_FILE, LOG_FILE, BOT_INTERVAL_SEC,
-    TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
 )
 from bot.data import get_all_timeframes, get_live_price
 from bot.indicators import add_all_indicators
@@ -51,6 +49,7 @@ def build_dfs():
 def bot_loop():
     logging.info("🚀 Бот запущен. Мониторинг каждые %s сек.", BOT_INTERVAL_SEC)
     state = load_state()
+    last_start_key = state.get("last_start_key")
     last_signal_ts = state.get("last_signal_ts", 0)
     last_direction = state.get("last_direction", None)
 
@@ -60,10 +59,47 @@ def bot_loop():
             ok, result = run_checks(dfs)
             price = get_live_price()
 
+            # Detailed logging per condition
+            for cid, entry in sorted(result.get("by_cond", {}).items()):
+                ok_flag = entry.get("ok", False)
+                info = entry.get("info", {})
+                if ok_flag:
+                    logging.info(f"[P{cid}] ✅ {info}")
+                else:
+                    logging.info(f"[P{cid}] ❌ {info}")
+
+            # Save snapshot for /status
+            try:
+                state['last_snapshot'] = result
+                save_state(state)
+            except Exception:
+                logging.exception("can't save snapshot")
+
+            # send telegram when we detect a new start candle evaluation (cond1 exists)
+            start_idx = result.get("start_index")
+            if start_idx is not None:
+                # unique key by direction+start ts
+                try:
+                    ts = int(dfs["5m"]["time"].iloc[start_idx])
+                except Exception:
+                    ts = start_idx
+                start_key = f"{result.get('direction')}|{ts}"
+                if start_key != last_start_key:
+                    # send a report (for debugging) to Telegram
+                    msg = format_message(result, price, dfs)
+                    sent = send_telegram_message(msg)
+                    logging.info("Telegram report sent for start candle: %s", sent)
+                    last_start_key = start_key
+                    state['last_start_key'] = last_start_key
+                    save_state(state)
+
             if ok:
-                # уникальность по «стартовой свече» (timestamp 5m)
+                # unique by start ts & direction => send final signal (avoid duplicates)
                 start_idx = result["start_index"]
-                ts = int(dfs["5m"]["time"].iloc[start_idx])
+                try:
+                    ts = int(dfs["5m"]["time"].iloc[start_idx])
+                except Exception:
+                    ts = start_idx
                 if ts != last_signal_ts or result["direction"] != last_direction:
                     msg = format_message(result, price, dfs)
                     send_telegram_message(msg)
@@ -76,7 +112,7 @@ def bot_loop():
                 else:
                     logging.info("ℹ️ Сигнал уже отправлялся для этой стартовой свечи.")
             else:
-                logging.info("ℹ️ Условия не выполнены: %s", result.get("reason", "см. детали"))
+                logging.info("ℹ️ Полный набор условий не выполнен: %s", result.get("summary"))
 
         except Exception as e:
             logging.exception("❌ Ошибка в боте: %s", e)
@@ -95,7 +131,16 @@ def test_telegram():
 @app.route("/status")
 def status():
     state = load_state()
-    return f"📊 last_signal_ts: {state.get('last_signal_ts','-')}, last_direction: {state.get('last_direction','-')}"
+    last_signal_ts = state.get('last_signal_ts', '-')
+    last_direction = state.get('last_direction', '-')
+    last_start_key = state.get('last_start_key', None)
+    snapshot = state.get('last_snapshot', {})
+    return jsonify({
+        'last_signal_ts': last_signal_ts,
+        'last_direction': last_direction,
+        'last_start_key': last_start_key,
+        'last_snapshot': snapshot
+    })
 
 # background
 threading.Thread(target=bot_loop, daemon=True).start()
