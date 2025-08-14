@@ -46,7 +46,7 @@ VOL_MA2 = 10
 ENABLED_CONDITIONS = [1,2,3,4,5,6,7,8,9,10,11]
 
 # Strict mode = require ALL enabled conditions to be True simultaneously.
-STRICT_MODE = True  # if False, uses branching logic (8&9) OR (10&11)
+STRICT_MODE = False  # if False, uses branching logic (8&9) OR (10&11)
 
 # How many candles to download per TF
 CANDLES_LIMIT = 300
