@@ -1,60 +1,40 @@
-def check_cond_1(df, direction):
+# bot/conditions/cond_1.py
+from typing import Tuple, Dict
+import pandas as pd
+from ..utils import last_cross_index
+
+def check_cond_1(df_by_tf, direction: str) -> Tuple[bool, Dict]:
     """
-    Условие 1:
-    На 5m TF: EMA10 пересекает EMA21 вслед за EMA5
-    не позднее чем на 4-й свече после пересечения EMA5 через EMA21.
-
-    :param df: pandas.DataFrame с колонками ema5, ema10, ema21
-    :param direction: str ("long" или "short")
-    :return: tuple (bool, dict)
+    1) 5m: EMA10 пересекает EMA21 вслед за EMA5 и не позже, чем через 4 свечи после пересечения EMA5 через EMA21.
+       Возвращаем start_index = индекс стартовой свечи (первая после кросса EMA10/21).
+       
+    Примечание по offset'ам:
+    - last_cross_index возвращает offset: 0 = последняя свеча, 1 = предпоследняя и т.д.
+    - Для явного и понятного сравнения переводим offset -> индекс в df (0..len-1),
+      где индекс 0 = первая свеча в df, индекс len-1 = последняя свеча.
     """
-    try:
-        long_mode = direction.lower() == "long"
+    df5: pd.DataFrame = df_by_tf["5m"]
+    ema5, ema10, ema21 = df5["ema5"], df5["ema10"], df5["ema21"]
 
-        # Находим индекс последнего пересечения EMA5 с EMA21
-        ema5_cross_idx = None
-        for i in range(len(df) - 2, -1, -1):
-            ema5_prev, ema5_now = df["ema5"].iloc[i], df["ema5"].iloc[i + 1]
-            ema21_prev, ema21_now = df["ema21"].iloc[i], df["ema21"].iloc[i + 1]
+    # ищем последние кроссы (offset: 0 = последняя св.)
+    cross5 = last_cross_index(ema5, ema21, "up" if direction == "long" else "down", lookback=50)
+    cross10 = last_cross_index(ema10, ema21, "up" if direction == "long" else "down", lookback=50)
 
-            if long_mode and ema5_prev < ema21_prev and ema5_now >= ema21_now:
-                ema5_cross_idx = i + 1
-                break
-            elif not long_mode and ema5_prev > ema21_prev and ema5_now <= ema21_now:
-                ema5_cross_idx = i + 1
-                break
+    if cross5 is None or cross10 is None:
+        return False, {"cond": 1, "reason": "Нет кроссов EMA5/21 или EMA10/21"}
 
-        if ema5_cross_idx is None:
-            return False, {"reason": "Нет пересечения EMA5 с EMA21"}
+    # переводим offset -> индекс в датасете (0..len-1)
+    # offset 0 -> idx = len-1 (последняя свеча)
+    idx5 = len(df5) - 1 - cross5
+    idx10 = len(df5) - 1 - cross10
 
-        # Проверяем EMA10 в пределах следующих 4 свечей
-        ema10_cross_idx = None
-        for j in range(ema5_cross_idx, min(ema5_cross_idx + 5, len(df))):
-            ema10_prev, ema10_now = df["ema10"].iloc[j - 1], df["ema10"].iloc[j]
-            ema21_prev, ema21_now = df["ema21"].iloc[j - 1], df["ema21"].iloc[j]
+    # Требование: EMA10 пересекла В ПОЗДНЕМ времени относительно EMA5 (т.е. idx10 >= idx5)
+    # и не позже, чем через 4 свечи (idx10 - idx5 <= 4).
+    if not (idx10 >= idx5 and (idx10 - idx5) <= 4):
+        return False, {"cond": 1, "reason": "EMA10 пересекла не вслед за EMA5 ≤4 свеч"}
 
-            if long_mode and ema10_prev < ema21_prev and ema10_now >= ema21_now:
-                ema10_cross_idx = j
-                break
-            elif not long_mode and ema10_prev > ema21_prev and ema10_now <= ema21_now:
-                ema10_cross_idx = j
-                break
+    # Стартовая свеча — первая свеча ПОСЛЕ пересечения EMA10/21
+    # Если кросс был на последней свече, start_index будет за пределами, поэтому кладём в len-1.
+    start_index = min(idx10 + 1, len(df5) - 1)
 
-        if ema10_cross_idx is None:
-            return False, {
-                "reason": "EMA10 не пересек EMA21 в течение 4 свеч после EMA5",
-                "start_index": ema5_cross_idx
-            }
-
-        return True, {
-            "reason": f"EMA10 пересёк EMA21 в течение 4 свеч после EMA5 (направление: {direction})",
-            "start_index": ema5_cross_idx,
-            "ema5_cross_time": df.index[ema5_cross_idx],
-            "ema10_cross_time": df.index[ema10_cross_idx],
-            "ema5_last": df["ema5"].iloc[-1],
-            "ema10_last": df["ema10"].iloc[-1],
-            "ema21_last": df["ema21"].iloc[-1]
-        }
-
-    except Exception as e:
-        return False, {"error": str(e)}
+    return True, {"cond": 1, "start_index": start_index}
