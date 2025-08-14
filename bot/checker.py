@@ -1,5 +1,4 @@
-
-# bot/checker.py
+# bot/checker.py (updated)
 from typing import Dict, Tuple
 import pandas as pd
 from .config import ENABLED_CONDITIONS, STRICT_MODE
@@ -16,21 +15,51 @@ from .conditions.cond_10 import check_cond_10
 from .conditions.cond_11 import check_cond_11
 
 def run_checks(df_by_tf: Dict[str, pd.DataFrame]) -> Tuple[bool, Dict]:
-    results_agg = {"direction": None, "start_index": None, "by_cond": []}
+    """
+    Enforced logic:
+    - Conditions 1..7 are mandatory.
+    - If 8 and 9 passed -> impulse_tf = '30m' => success.
+    - Else try 10 (TF transfer) and require 11 -> impulse_tf = '1h/2h' => success.
+    Returns (ok, result_dict) where result_dict contains per-condition details and overall summary.
+    """
+    result = {
+        "by_cond": {},
+        "direction": None,
+        "start_index": None,
+        "impulse_tf": None,
+        "summary": "",
+    }
 
-    ok1, info1 = check_cond_1(df_by_tf, "long")
-    if not ok1:
-        ok1s, info1s = check_cond_1(df_by_tf, "short")
-        if not ok1s:
-            return False, {"reason": "Нет стартовой свечи ни для long, ни для short", "by_cond": [info1, info1s]}
-        start_idx = info1s["start_index"]; direction = "short"; by_cond = [info1s]
+    # 1) Detect start for long or short (cond_1)
+    ok1_long, info1_long = check_cond_1(df_by_tf, "long")
+    ok1_short, info1_short = check_cond_1(df_by_tf, "short")
+    if ok1_long and not ok1_short:
+        direction = "long"
+        info1 = info1_long
+    elif ok1_short and not ok1_long:
+        direction = "short"
+        info1 = info1_short
+    elif ok1_long and ok1_short:
+        # choose most recent by start_index (higher index = later candle)
+        if info1_long.get("start_index", 0) >= info1_short.get("start_index", 0):
+            direction = "long"
+            info1 = info1_long
+        else:
+            direction = "short"
+            info1 = info1_short
     else:
-        start_idx = info1["start_index"]; direction = "long"; by_cond = [info1]
+        result["by_cond"][1] = {"ok": False, "info_long": info1_long, "info_short": info1_short}
+        result["summary"] = "no_start"
+        return False, result
 
-    impulse_tf = "30m"
+    result["direction"] = direction
+    result["by_cond"][1] = {"ok": True, "info": info1}
+    start_idx = info1.get("start_index")
+    result["start_index"] = start_idx
 
-    checks = []
-    for cid in [c for c in ENABLED_CONDITIONS if c in [2,3,4,5,6,7]]:
+    # Mandatory checks 2..7
+    mandatory_ok = True
+    for cid in [2,3,4,5,6,7]:
         if cid == 2:
             ok, inf = check_cond_2(df_by_tf, direction)
         elif cid == 3:
@@ -43,30 +72,43 @@ def run_checks(df_by_tf: Dict[str, pd.DataFrame]) -> Tuple[bool, Dict]:
             ok, inf = check_cond_6(df_by_tf, direction, start_idx)
         elif cid == 7:
             ok, inf = check_cond_7(df_by_tf, direction)
-        checks.append((cid, ok, inf))
+        else:
+            ok, inf = False, {"cond": cid, "reason": "unknown"}
+        result["by_cond"][cid] = {"ok": ok, "info": inf}
+        if not ok:
+            mandatory_ok = False
 
-    ok8, inf8 = check_cond_8(df_by_tf, direction, start_idx); checks.append((8, ok8, inf8))
-    ok9, inf9 = check_cond_9(df_by_tf, direction, start_idx); checks.append((9, ok9, inf9))
+    if not mandatory_ok:
+        result["summary"] = "failed_mandatory_2_7"
+        return False, result
 
-    ok10, inf10 = check_cond_10(df_by_tf, direction, start_idx); checks.append((10, ok10, inf10))
+    # Branch: check 8 & 9 (30m)
+    ok8, inf8 = check_cond_8(df_by_tf, direction, start_idx)
+    result["by_cond"][8] = {"ok": ok8, "info": inf8}
+    ok9, inf9 = check_cond_9(df_by_tf, direction, start_idx)
+    result["by_cond"][9] = {"ok": ok9, "info": inf9}
+
+    if ok8 and ok9:
+        result["impulse_tf"] = "30m"
+        # mark 10/11 as skipped
+        result["by_cond"][10] = {"ok": False, "info": {"note": "skipped, 8&9 satisfied"}}
+        result["by_cond"][11] = {"ok": False, "info": {"note": "skipped, 8&9 satisfied"}}
+        result["summary"] = "ok_30m_branch"
+        return True, result
+
+    # Else try transfer (10) and require 11
+    ok10, inf10 = check_cond_10(df_by_tf, direction, start_idx)
+    result["by_cond"][10] = {"ok": ok10, "info": inf10}
     if ok10:
-        impulse_tf = "1h/2h"
+        ok11, inf11 = check_cond_11(df_by_tf, direction, start_idx)
+        result["by_cond"][11] = {"ok": ok11, "info": inf11}
+        if ok11:
+            result["impulse_tf"] = "1h/2h"
+            result["summary"] = "ok_1h2h_branch"
+            return True, result
+        else:
+            result["summary"] = "failed_11_after_10"
+            return False, result
 
-    ok11, inf11 = check_cond_11(df_by_tf, direction, start_idx); checks.append((11, ok11, inf11))
-
-    by_cond = by_cond + [inf for _,_,inf in checks]
-
-    if STRICT_MODE:
-        base_ok = all(ok for cid, ok, _ in checks if cid in ENABLED_CONDITIONS)
-    else:
-        base_ok = all(ok for cid, ok, _ in checks if cid in [2,3,4,5,6,7])
-        path_30 = ok8 and ok9
-        path_1h2h = ok10 and ok11
-        base_ok = base_ok and (path_30 or path_1h2h)
-
-    return base_ok, {
-        "direction": direction,
-        "start_index": start_idx,
-        "impulse_tf": impulse_tf,
-        "by_cond": by_cond
-    }
+    result["summary"] = "failed_higher_tf_checks"
+    return False, result
