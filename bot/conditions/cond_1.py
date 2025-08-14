@@ -1,40 +1,42 @@
-# bot/conditions/cond_1.py
-from typing import Tuple, Dict
-import pandas as pd
-from ..utils import last_cross_index
-
-def check_cond_1(df_by_tf, direction: str) -> Tuple[bool, Dict]:
+def cond_1(df):
     """
-    1) 5m: EMA10 пересекает EMA21 вслед за EMA5 и не позже, чем через 4 свечи после пересечения EMA5 через EMA21.
-       Возвращаем start_index = индекс стартовой свечи (первая после кросса EMA10/21).
-       
-    Примечание по offset'ам:
-    - last_cross_index возвращает offset: 0 = последняя свеча, 1 = предпоследняя и т.д.
-    - Для явного и понятного сравнения переводим offset -> индекс в df (0..len-1),
-      где индекс 0 = первая свеча в df, индекс len-1 = последняя свеча.
+    Условие 1:
+    Срабатывает, если EMA5 или EMA10 пересекли EMA21 на последней свече.
+    Игнорирует пересечение цены с EMA21.
     """
-    df5: pd.DataFrame = df_by_tf["5m"]
-    ema5, ema10, ema21 = df5["ema5"], df5["ema10"], df5["ema21"]
+    try:
+        ema5_prev = df["ema5"].iloc[-2]
+        ema5_now = df["ema5"].iloc[-1]
+        ema10_prev = df["ema10"].iloc[-2]
+        ema10_now = df["ema10"].iloc[-1]
+        ema21_prev = df["ema21"].iloc[-2]
+        ema21_now = df["ema21"].iloc[-1]
 
-    # ищем последние кроссы (offset: 0 = последняя св.)
-    cross5 = last_cross_index(ema5, ema21, "up" if direction == "long" else "down", lookback=50)
-    cross10 = last_cross_index(ema10, ema21, "up" if direction == "long" else "down", lookback=50)
+        # Проверка на пересечение EMA5 и EMA21
+        cross_ema5_up = ema5_prev < ema21_prev and ema5_now >= ema21_now
+        cross_ema5_down = ema5_prev > ema21_prev and ema5_now <= ema21_now
 
-    if cross5 is None or cross10 is None:
-        return False, {"cond": 1, "reason": "Нет кроссов EMA5/21 или EMA10/21"}
+        # Проверка на пересечение EMA10 и EMA21
+        cross_ema10_up = ema10_prev < ema21_prev and ema10_now >= ema21_now
+        cross_ema10_down = ema10_prev > ema21_prev and ema10_now <= ema21_now
 
-    # переводим offset -> индекс в датасете (0..len-1)
-    # offset 0 -> idx = len-1 (последняя свеча)
-    idx5 = len(df5) - 1 - cross5
-    idx10 = len(df5) - 1 - cross10
+        # Если хотя бы одно из пересечений произошло — сигнал есть
+        crossed = cross_ema5_up or cross_ema5_down or cross_ema10_up or cross_ema10_down
 
-    # Требование: EMA10 пересекла В ПОЗДНЕМ времени относительно EMA5 (т.е. idx10 >= idx5)
-    # и не позже, чем через 4 свечи (idx10 - idx5 <= 4).
-    if not (idx10 >= idx5 and (idx10 - idx5) <= 4):
-        return False, {"cond": 1, "reason": "EMA10 пересекла не вслед за EMA5 ≤4 свеч"}
+        return crossed, {
+            "ema5": ema5_now,
+            "ema10": ema10_now,
+            "ema21": ema21_now,
+            "cross_ema5_up": cross_ema5_up,
+            "cross_ema5_down": cross_ema5_down,
+            "cross_ema10_up": cross_ema10_up,
+            "cross_ema10_down": cross_ema10_down,
+            "reason": "EMA5 или EMA10 пересекли EMA21"
+        }
 
-    # Стартовая свеча — первая свеча ПОСЛЕ пересечения EMA10/21
-    # Если кросс был на последней свече, start_index будет за пределами, поэтому кладём в len-1.
-    start_index = min(idx10 + 1, len(df5) - 1)
+    except Exception as e:
+        return False, {"error": str(e)}
 
-    return True, {"cond": 1, "start_index": start_index}
+
+# Пример остальных условий (cond_2, cond_3, ...), сюда вставляются твои текущие версии:
+# ...
