@@ -33,6 +33,14 @@ def run_checks(df_by_tf: Dict[str, pd.DataFrame]) -> Tuple[bool, Dict]:
     # 1) Detect start for long or short (cond_1)
     ok1_long, info1_long = check_cond_1(df_by_tf, "long")
     ok1_short, info1_short = check_cond_1(df_by_tf, "short")
+
+    # Обработка ошибки отсутствующих EMA
+    if "error" in info1_long or "error" in info1_short:
+        result["by_cond"][1] = {"ok": False, "info_long": info1_long, "info_short": info1_short}
+        result["summary"] = "wait_for_data"
+        return False, result
+
+    # Определяем направление
     if ok1_long and not ok1_short:
         direction = "long"
         info1 = info1_long
@@ -40,7 +48,7 @@ def run_checks(df_by_tf: Dict[str, pd.DataFrame]) -> Tuple[bool, Dict]:
         direction = "short"
         info1 = info1_short
     elif ok1_long and ok1_short:
-        # choose most recent by start_index (higher index = later candle)
+        # выбираем более свежую свечу
         if info1_long.get("start_index", 0) >= info1_short.get("start_index", 0):
             direction = "long"
             info1 = info1_long
