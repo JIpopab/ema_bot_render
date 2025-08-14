@@ -249,21 +249,25 @@ def bot_loop():
             # create signal key
             signal_key = (result.get("direction"), start_ts)
             if signal_key != last_signal:
-                try:
-                    price = None
+                # ensure start candle is closed (there is at least one newer closed candle)
+                if start_idx is None or df5 is None or start_idx >= len(df5) - 1:
+                    logger.info("Start candle not yet closed (start_idx=%s len(df5)=%s). Skipping final signal.", start_idx, None if df5 is None else len(df5))
+                else:
                     try:
-                        price = float(dfs["5m"]["close"].iloc[-1])
-                    except Exception:
                         price = None
-                    msg = format_message(result, price or 0.0, dfs)
-                    send_telegram_message(msg)
-                    logger.info("✅ Final signal sent via Telegram (direction=%s start_ts=%s)", result.get("direction"), start_ts)
-                except Exception:
-                    logger.exception("Failed to send final telegram")
-                last_signal = signal_key
-                state["last_signal_ts"] = start_ts
-                state["last_direction"] = result.get("direction")
-                save_state(state)
+                        try:
+                            price = float(dfs["5m"]["close"].iloc[-1])
+                        except Exception:
+                            price = None
+                        msg = format_message(result, price or 0.0, dfs)
+                        send_telegram_message(msg)
+                        logger.info("✅ Final signal sent via Telegram (direction=%s start_ts=%s)", result.get("direction"), start_ts)
+                    except Exception:
+                        logger.exception("Failed to send final telegram")
+                    last_signal = signal_key
+                    state["last_signal_ts"] = start_ts
+                    state["last_direction"] = result.get("direction")
+                    save_state(state)
             else:
                 logger.info("Duplicate final signal suppressed")
         else:
