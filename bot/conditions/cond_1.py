@@ -43,13 +43,13 @@ def check_cond_1(df_by_tf, direction: str) -> Tuple[bool, Dict]:
     if not (idx10 >= idx5 and (idx10 - idx5) <= 4):
         return False, {"cond": 1, "reason": "EMA10 пересекла не вслед за EMA5 ≤4 свеч"}
 
-    # Проверка реального пересечения (без касаний). Добавлено: <= и >= (с касанием) 
+    # Проверка реального пересечения (без касаний).
     prev_ema10, prev_ema21 = ema10.iloc[idx10 - 1], ema21.iloc[idx10 - 1]
     curr_ema10, curr_ema21 = ema10.iloc[idx10], ema21.iloc[idx10]
 
     crossed_real = (
-        (prev_ema10 <= prev_ema21 and curr_ema10 > curr_ema21) or
-        (prev_ema10 >= prev_ema21 and curr_ema10 < curr_ema21)
+        (prev_ema10 < prev_ema21 and curr_ema10 > curr_ema21) or
+        (prev_ema10 > prev_ema21 and curr_ema10 < curr_ema21)
     )
 
     if not crossed_real:
