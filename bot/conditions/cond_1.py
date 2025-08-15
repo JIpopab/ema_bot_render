@@ -2,8 +2,10 @@
 from typing import Tuple, Dict
 import pandas as pd
 import json, os
+import logging
 from ..utils import last_cross_index
 
+logger = logging.getLogger(__name__)
 STATE_FILE = "cond1_state.json"
 
 def load_state():
@@ -39,7 +41,11 @@ def check_cond_1(df_by_tf, direction: str) -> Tuple[bool, Dict]:
     # Находим последнее пересечение EMA5/21
     cross5 = last_cross_index(ema5[:-1], ema21[:-1], cross_type, lookback=50)
     if cross5 is None:
-        return False, {"cond": 1, "reason": "Нет пересечения EMA5/21"}
+        reason = "Нет пересечения EMA5/21"
+        ok_flag = False
+        info = {"cond": 1, "reason": reason}
+        logger.info("[P1] %s reason=%s values=%s", "✅" if ok_flag else "❌", reason, json.dumps(info, ensure_ascii=False))
+        return False, info
 
     idx5 = len(df5) - 1 - cross5  # индекс последнего пересечения EMA5
 
@@ -66,11 +72,18 @@ def check_cond_1(df_by_tf, direction: str) -> Tuple[bool, Dict]:
                 crossed_idx = i
                 break  # сигнал готов
             elif touch:
-                # ждем закрытия следующей свечи, если не превышен лимит
-                return False, {"cond": 1, "reason": "EMA10 коснулась EMA21, ждем следующей свечи"}
+                reason = "EMA10 коснулась EMA21, ждем следующей свечи"
+                ok_flag = False
+                info = {"cond": 1, "reason": reason}
+                logger.info("[P1] %s reason=%s values=%s", "✅" if ok_flag else "❌", reason, json.dumps(info, ensure_ascii=False))
+                return False, info
 
     if crossed_idx is None:
-        return False, {"cond": 1, "reason": "Нет подтвержденного пересечения EMA10/21 в допустимом диапазоне"}
+        reason = "Нет подтвержденного пересечения EMA10/21 в допустимом диапазоне"
+        ok_flag = False
+        info = {"cond": 1, "reason": reason}
+        logger.info("[P1] %s reason=%s values=%s", "✅" if ok_flag else "❌", reason, json.dumps(info, ensure_ascii=False))
+        return False, info
 
     # Проверка состояния, чтобы не дублировать сигнал
     state = load_state()
@@ -78,11 +91,20 @@ def check_cond_1(df_by_tf, direction: str) -> Tuple[bool, Dict]:
     last_idx = state.get("last_idx")
 
     if last_cross == cross_type and last_idx == int(crossed_idx):
-        return False, {"cond": 1, "reason": "Сигнал уже был (persist)"}
+        reason = "Сигнал уже был (persist)"
+        ok_flag = False
+        info = {"cond": 1, "reason": reason}
+        logger.info("[P1] %s reason=%s values=%s", "✅" if ok_flag else "❌", reason, json.dumps(info, ensure_ascii=False))
+        return False, info
 
     # Сохраняем новое состояние
     state["last_cross"] = cross_type
     state["last_idx"] = int(crossed_idx)
     save_state(state)
 
-    return True, {"cond": 1, "start_index": crossed_idx}
+    reason = "EMA10 пересекла EMA21, сигнал готов"
+    ok_flag = True
+    info = {"cond": 1, "start_index": crossed_idx}
+    logger.info("[P1] %s reason=%s values=%s", "✅" if ok_flag else "❌", reason, json.dumps(info, ensure_ascii=False))
+
+    return True, info
