@@ -13,15 +13,22 @@ def load_state():
     return {}
 
 def save_state(state):
+    # Конвертируем numpy int/float в обычные Python типы для json
+    safe_state = {}
+    for k, v in state.items():
+        if hasattr(v, "item"):
+            safe_state[k] = v.item()
+        else:
+            safe_state[k] = v
     with open(STATE_FILE, "w") as f:
-        json.dump(state, f)
+        json.dump(safe_state, f)
 
 def check_cond_1(df_by_tf, direction: str) -> Tuple[bool, Dict]:
     """
     Условие:
     1) EMA10 пересекает EMA21 вслед за EMA5 (EMA5 пересекла не позже 4 свечей назад).
     2) Касания игнорируются (нужно реальное пересечение).
-    3) Сигнал даётся сразу после закрытия свечи с пересечением EMA10/21.
+    3) Сигнал даётся сразу после закрытия свечи с подтверждённым пересечением EMA10/21.
     4) Повторные сигналы для того же пересечения не отправляются.
     """
     df5: pd.DataFrame = df_by_tf["5m"]
@@ -29,49 +36,53 @@ def check_cond_1(df_by_tf, direction: str) -> Tuple[bool, Dict]:
 
     cross_type = "up" if direction == "long" else "down"
 
-    # Находим последнее пересечение EMA5 и EMA21 (по закрытым свечам)
+    # Находим последнее пересечение EMA5/21
     cross5 = last_cross_index(ema5[:-1], ema21[:-1], cross_type, lookback=50)
     if cross5 is None:
         return False, {"cond": 1, "reason": "Нет пересечения EMA5/21"}
 
-    idx5 = len(df5) - 1 - cross5  # индекс последней EMA5/21 свечи
+    idx5 = len(df5) - 1 - cross5  # индекс последнего пересечения EMA5
 
-    # Проверяем EMA10/21 в окне до 4 свечей после EMA5
+    # Диапазон свечей для проверки EMA10: максимум 4 свечи после EMA5
+    lookback_range = range(idx5 + 1, min(idx5 + 5, len(df5)))
+
     crossed_idx = None
-    for i in range(idx5, min(idx5 + 5, len(df5))):
+    for i in lookback_range:
         prev_ema10, prev_ema21 = ema10.iloc[i - 1], ema21.iloc[i - 1]
         curr_ema10, curr_ema21 = ema10.iloc[i], ema21.iloc[i]
 
-        # Реальное пересечение на закрытии свечи
+        # Реальное пересечение EMA10/21
         real_cross = (
             (cross_type == "up" and prev_ema10 < prev_ema21 and curr_ema10 > curr_ema21) or
             (cross_type == "down" and prev_ema10 > prev_ema21 and curr_ema10 < curr_ema21)
         )
+        # Касание EMA10/21
+        touch = (cross_type == "up" and curr_ema10 == curr_ema21) or \
+                (cross_type == "down" and curr_ema10 == curr_ema21)
 
-        # Касание (игнорируем)
-        touch = (curr_ema10 == curr_ema21)
-
-        if real_cross:
-            crossed_idx = i
-            break  # нашли пересечение, больше свечи не проверяем
-        elif touch:
-            continue  # ждем следующей свечи
+        # Проверяем только последнюю закрытую свечу
+        if i == len(df5) - 1:
+            if real_cross:
+                crossed_idx = i
+                break  # сигнал готов
+            elif touch:
+                # ждем закрытия следующей свечи, если не превышен лимит
+                return False, {"cond": 1, "reason": "EMA10 коснулась EMA21, ждем следующей свечи"}
 
     if crossed_idx is None:
-        return False, {"cond": 1, "reason": "EMA10 не пересекла EMA21 в пределах 4 свечей после EMA5"}
+        return False, {"cond": 1, "reason": "Нет подтвержденного пересечения EMA10/21 в допустимом диапазоне"}
 
-    # Проверка состояния для предотвращения дублирования сигнала
+    # Проверка состояния, чтобы не дублировать сигнал
     state = load_state()
     last_cross = state.get("last_cross")
     last_idx = state.get("last_idx")
 
-    if last_cross == cross_type and last_idx == crossed_idx:
+    if last_cross == cross_type and last_idx == int(crossed_idx):
         return False, {"cond": 1, "reason": "Сигнал уже был (persist)"}
 
     # Сохраняем новое состояние
     state["last_cross"] = cross_type
-    state["last_idx"] = crossed_idx
+    state["last_idx"] = int(crossed_idx)
     save_state(state)
 
-    # Сигнал шлём сразу после закрытия свечи с пересечением
     return True, {"cond": 1, "start_index": crossed_idx}
