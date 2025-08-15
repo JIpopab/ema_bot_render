@@ -21,7 +21,7 @@ def check_cond_1(df_by_tf, direction: str) -> Tuple[bool, Dict]:
     Условие:
     1) EMA10 пересекает EMA21 вслед за EMA5 (EMA5 пересекла не позже 4 свечей назад).
     2) Касания игнорируются (нужно реальное пересечение).
-    3) Сигнал даётся только на следующей свече после пересечения EMA10/EMA21.
+    3) Сигнал даётся сразу после закрытия свечи с пересечением EMA10/21.
     4) Повторные сигналы для того же пересечения не отправляются.
     """
     df5: pd.DataFrame = df_by_tf["5m"]
@@ -29,47 +29,49 @@ def check_cond_1(df_by_tf, direction: str) -> Tuple[bool, Dict]:
 
     cross_type = "up" if direction == "long" else "down"
 
-    # Находим пересечения EMA5 и EMA10 с EMA21 (по закрытым свечам, без текущей)
+    # Находим последнее пересечение EMA5 и EMA21 (по закрытым свечам)
     cross5 = last_cross_index(ema5[:-1], ema21[:-1], cross_type, lookback=50)
-    cross10 = last_cross_index(ema10[:-1], ema21[:-1], cross_type, lookback=50)
+    if cross5 is None:
+        return False, {"cond": 1, "reason": "Нет пересечения EMA5/21"}
 
-    if cross5 is None or cross10 is None:
-        return False, {"cond": 1, "reason": "Нет пересечений EMA5/21 или EMA10/21"}
+    idx5 = len(df5) - 1 - cross5  # индекс последней EMA5/21 свечи
 
-    # Индексы пересечений относительно начала DataFrame
-    idx5 = len(df5) - 1 - cross5
-    idx10 = len(df5) - 1 - cross10
+    # Проверяем EMA10/21 в окне до 4 свечей после EMA5
+    crossed_idx = None
+    for i in range(idx5, min(idx5 + 5, len(df5))):
+        prev_ema10, prev_ema21 = ema10.iloc[i - 1], ema21.iloc[i - 1]
+        curr_ema10, curr_ema21 = ema10.iloc[i], ema21.iloc[i]
 
-    # EMA10 пересекла EMA21 не позже 4 свечей после EMA5
-    if not (idx10 >= idx5 and (idx10 - idx5) <= 4):
-        return False, {"cond": 1, "reason": "EMA10 пересекла не вслед за EMA5 ≤4 свеч"}
+        # Реальное пересечение на закрытии свечи
+        real_cross = (
+            (cross_type == "up" and prev_ema10 < prev_ema21 and curr_ema10 > curr_ema21) or
+            (cross_type == "down" and prev_ema10 > prev_ema21 and curr_ema10 < curr_ema21)
+        )
 
-    # Проверка, что пересечение было реальным (не касание)
-    prev_ema10, prev_ema21 = ema10.iloc[idx10 - 1], ema21.iloc[idx10 - 1]
-    curr_ema10, curr_ema21 = ema10.iloc[idx10], ema21.iloc[idx10]
-    crossed_real = (
-        (cross_type == "up" and prev_ema10 < prev_ema21 and curr_ema10 > curr_ema21) or
-        (cross_type == "down" and prev_ema10 > prev_ema21 and curr_ema10 < curr_ema21)
-    )
-    if not crossed_real:
-        return False, {"cond": 1, "reason": "Касание или пересечения нет"}
+        # Касание (игнорируем)
+        touch = (curr_ema10 == curr_ema21)
 
-    # Сигнал даём только на следующей свече после пересечения
-    start_index = idx10 + 1
-    if start_index != len(df5) - 1:
-        return False, {"cond": 1, "reason": "Ещё не наступила свеча после пересечения"}
+        if real_cross:
+            crossed_idx = i
+            break  # нашли пересечение, больше свечи не проверяем
+        elif touch:
+            continue  # ждем следующей свечи
 
-    # Читаем состояние, чтобы не дублировать сигнал
+    if crossed_idx is None:
+        return False, {"cond": 1, "reason": "EMA10 не пересекла EMA21 в пределах 4 свечей после EMA5"}
+
+    # Проверка состояния для предотвращения дублирования сигнала
     state = load_state()
     last_cross = state.get("last_cross")
     last_idx = state.get("last_idx")
 
-    if last_cross == cross_type and last_idx == idx10:
+    if last_cross == cross_type and last_idx == crossed_idx:
         return False, {"cond": 1, "reason": "Сигнал уже был (persist)"}
 
     # Сохраняем новое состояние
     state["last_cross"] = cross_type
-    state["last_idx"] = idx10
+    state["last_idx"] = crossed_idx
     save_state(state)
 
-    return True, {"cond": 1, "start_index": start_index}
+    # Сигнал шлём сразу после закрытия свечи с пересечением
+    return True, {"cond": 1, "start_index": crossed_idx}
