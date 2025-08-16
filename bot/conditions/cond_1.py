@@ -101,9 +101,12 @@ def _is_real_cross(prev_a: float, prev_b: float, curr_a: float, curr_b: float, c
         return False
 
 
-def _is_touch(a: float, b: float) -> bool:
-    """Касание: |a-b| <= eps"""
-    return abs(a - b) <= _eps(a, b)
+def _is_touch(a: float, b: float, eps: float = 1e-9) -> bool:
+    """
+    Касание EMA: значения настолько близки, что считаем их равными.
+    Используется перед проверкой пересечения.
+    """
+    return abs(a - b) < eps
 
 
 def _last_cross_pos(series_a: pd.Series, series_b: pd.Series, cross_type: str, lookback: int = 200) -> Optional[int]:
