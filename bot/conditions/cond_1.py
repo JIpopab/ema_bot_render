@@ -71,43 +71,36 @@ def save_state(state: Dict):
         json.dump(safe_state, f)
 
 
-def _is_real_cross(prev_a: float, prev_b: float, curr_a: float, curr_b: float, cross_type: str, eps: float = 1e-9) -> bool:
+def _is_real_cross(prev_a: float, prev_b: float, curr_a: float, curr_b: float, cross_type: str) -> bool:
     """
-    Проверка настоящего пересечения EMA10/EMA21.
-    - Касание (равенство) не считается пересечением.
-    - Пересечение только при строгой смене знака (с учётом eps).
+    Проверка настоящего пересечения EMA.
+    - Касание (значения практически равны по адаптивному eps) не считается пересечением.
+    - Пересечение только при строгой смене знака.
     - cross_type: "up" (a пересекла b снизу вверх) или "down" (a сверху вниз).
     """
+    # Касание в текущей или предыдущей точке — не сигнал
+    if _is_touch(curr_a, curr_b) or _is_touch(prev_a, prev_b):
+        return False
 
     prev_diff = prev_a - prev_b
     curr_diff = curr_a - curr_b
 
-    # Игнорируем касание (если близко к нулю)
-    if abs(prev_diff) <= eps or abs(curr_diff) <= eps:
-        return False
-
-    # Смена знака = реальное пересечение
-    crossed = (prev_diff * curr_diff) < 0
-
-    if not crossed:
-        return False
-
-    if cross_type == "up":
-        # Было ниже (отрицательное), стало выше (положительное)
-        return prev_diff < 0 and curr_diff > 0
-    elif cross_type == "down":
-        # Было выше (положительное), стало ниже (отрицательное)
-        return prev_diff > 0 and curr_diff < 0
+    # Смена знака и соответствие направлению
+    if prev_diff * curr_diff < 0:
+        if cross_type == "up" and curr_diff > 0:
+            return True
+        if cross_type == "down" and curr_diff < 0:
+            return True
 
     return False
 
 
-def _is_touch(a: float, b: float, eps: float = 1e-9) -> bool:
+def _is_touch(a: float, b: float) -> bool:
     """
     Касание EMA: значения настолько близки, что считаем их равными.
-    Используется перед проверкой пересечения.
+    Использует адаптивный eps (абсолютный + относительный).
     """
-    return abs(a - b) < eps
+    return abs(a - b) <= _eps(a, b)
 
 
 def _last_cross_pos(series_a: pd.Series, series_b: pd.Series, cross_type: str, lookback: int = 200) -> Optional[int]:
@@ -324,9 +317,9 @@ def check_cond_1(df_by_tf, direction: str) -> Tuple[bool, Dict]:
         _flush_handlers()
         return False, info
 
-# Если не в ожидании — no_start
-info = {"cond": 1, "reason": "no_start"}
-logger.info("[P1] SUMMARY: no_start | impulse_tf=None | direction=None")
-logger.info("[P1] ❌ reason=%s values=%s", info["reason"], json.dumps(info, ensure_ascii=False))
-_flush_handlers()
-return False, info
+    # Если не в ожидании — no_start (fallback)
+    info = {"cond": 1, "reason": "no_start"}
+    logger.info("[P1] SUMMARY: no_start | impulse_tf=None | direction=None")
+    logger.info("[P1] ❌ reason=%s values=%s", info["reason"], json.dumps(info, ensure_ascii=False))
+    _flush_handlers()
+    return False, info
