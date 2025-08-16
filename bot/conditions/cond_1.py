@@ -73,16 +73,32 @@ def save_state(state: Dict):
 
 def _is_real_cross(prev_a: float, prev_b: float, curr_a: float, curr_b: float, cross_type: str) -> bool:
     """
-    Реальное пересечение с порогом eps:
-      up:  prev_a < prev_b - eps_prev  AND curr_a > curr_b + eps_curr
-      down: prev_a > prev_b + eps_prev AND curr_a < curr_b - eps_curr
+    Проверка настоящего пересечения:
+    - касание (==) не считается
+    - пересечение есть только при строгой смене знака разности
     """
-    eps_prev = _eps(prev_a, prev_b)
-    eps_curr = _eps(curr_a, curr_b)
-    if cross_type == "up":
-        return (prev_a < (prev_b - eps_prev)) and (curr_a > (curr_b + eps_curr))
+
+    # Разности
+    prev_diff = prev_a - prev_b
+    curr_diff = curr_a - curr_b
+
+    # Касание (равенство хотя бы в одной точке) → не пересечение
+    if prev_diff == 0 or curr_diff == 0:
+        return False
+
+    # Смена знака (строгое пересечение)
+    crossed = (prev_diff * curr_diff) < 0
+
+    if not crossed:
+        return False
+
+    # Проверка направления
+    if cross_type == "long":
+        return prev_diff < 0 and curr_diff > 0  # снизу вверх
+    elif cross_type == "short":
+        return prev_diff > 0 and curr_diff < 0  # сверху вниз
     else:
-        return (prev_a > (prev_b + eps_prev)) and (curr_a < (curr_b - eps_curr))
+        return False
 
 
 def _is_touch(a: float, b: float) -> bool:
