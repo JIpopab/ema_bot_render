@@ -71,34 +71,35 @@ def save_state(state: Dict):
         json.dump(safe_state, f)
 
 
-def _is_real_cross(prev_a: float, prev_b: float, curr_a: float, curr_b: float, cross_type: str) -> bool:
+def _is_real_cross(prev_a: float, prev_b: float, curr_a: float, curr_b: float, cross_type: str, eps: float = 1e-9) -> bool:
     """
-    Проверка настоящего пересечения:
-    - касание (==) не считается
-    - пересечение есть только при строгой смене знака разности
+    Проверка настоящего пересечения EMA10/EMA21.
+    - Касание (равенство) не считается пересечением.
+    - Пересечение только при строгой смене знака (с учётом eps).
+    - cross_type: "up" (a пересекла b снизу вверх) или "down" (a сверху вниз).
     """
 
-    # Разности
     prev_diff = prev_a - prev_b
     curr_diff = curr_a - curr_b
 
-    # Касание (равенство хотя бы в одной точке) → не пересечение
-    if prev_diff == 0 or curr_diff == 0:
+    # Игнорируем касание (если близко к нулю)
+    if abs(prev_diff) <= eps or abs(curr_diff) <= eps:
         return False
 
-    # Смена знака (строгое пересечение)
+    # Смена знака = реальное пересечение
     crossed = (prev_diff * curr_diff) < 0
 
     if not crossed:
         return False
 
-    # Проверка направления
-    if cross_type == "long":
-        return prev_diff < 0 and curr_diff > 0  # снизу вверх
-    elif cross_type == "short":
-        return prev_diff > 0 and curr_diff < 0  # сверху вниз
-    else:
-        return False
+    if cross_type == "up":
+        # Было ниже (отрицательное), стало выше (положительное)
+        return prev_diff < 0 and curr_diff > 0
+    elif cross_type == "down":
+        # Было выше (положительное), стало ниже (отрицательное)
+        return prev_diff > 0 and curr_diff < 0
+
+    return False
 
 
 def _is_touch(a: float, b: float, eps: float = 1e-9) -> bool:
