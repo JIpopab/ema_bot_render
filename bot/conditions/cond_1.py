@@ -264,68 +264,69 @@ def check_cond_1(df_by_tf, direction: str) -> Tuple[bool, Dict]:
             _flush_handlers()
             return False, info
 
-        bars_since = last_closed_pos - start_pos  # 0..inf, 0 означает, что последняя закрытая свеча — та самая, где был start_pos
-        # Timeout: на X+5 (bars_since >=5) сбрасываем
-        if bars_since >= 5:
-            # timeout -> сброс
-            state["waiting"] = False
-            state["start_pos"] = None
-            state["cross_type"] = None
-            save_state(state)
-            info = {"cond": 1, "reason": "Нет подтвержденного пересечения EMA10/21 в допустимом диапазоне"}
-            logger.info("[P1] ⏱ timeout: bars_since=%s -> %s", bars_since, json.dumps(info, ensure_ascii=False))
+    bars_since = last_closed_pos - start_pos  # 0..inf, 0 означает, что последняя закрытая свеча — та самая, где был start_pos
+    # Timeout: на X+5 (bars_since >=5) сбрасываем
+    if bars_since >= 5:
+        # timeout -> сброс
+        state["waiting"] = False
+        state["start_pos"] = None
+        state["cross_type"] = None
+        save_state(state)
+        info = {"cond": 1, "reason": "Нет подтвержденного пересечения EMA10/21 в допустимом диапазоне"}
+        logger.info("[P1] ⏱ timeout: bars_since=%s -> %s", bars_since, json.dumps(info, ensure_ascii=False))
+        _flush_handlers()
+        return False, info
+
+    # Проверяем ТОЛЬКО текущую последнюю закрытую свечу (last_closed_pos)
+    prev_pos = last_closed_pos - 1
+    if prev_pos < 0:
+        info = {"cond": 1, "reason": "Недостаточно предыдущих данных для проверки пересечения EMA10/21"}
+        logger.info("[P1] ❌ reason=%s values=%s", info["reason"], json.dumps(info, ensure_ascii=False))
+        _flush_handlers()
+        return False, info
+
+    prev_ema10, prev_ema21 = float(ema10.iat[prev_pos]), float(ema21.iat[prev_pos])
+    curr_ema10, curr_ema21 = float(ema10.iat[last_closed_pos]), float(ema21.iat[last_closed_pos])
+
+    # Касание — не сигнал
+    if _is_touch(curr_ema10, curr_ema21):
+        info = {"cond": 1, "reason": "EMA10 коснулась EMA21, ждем следующей свечи"}
+        logger.info("[P1] ❌ touch: prev=%.12f curr=%.12f", prev_ema10 - prev_ema21, curr_ema10 - curr_ema21)
+        _flush_handlers()
+        return False, info
+
+    # Реальное пересечение
+    if _is_real_cross(prev_ema10, prev_ema21, curr_ema10, curr_ema21, cross_type):
+        # Защита от дублирования (persist)
+        if last_signal_pos is not None and last_signal_dir == cross_type and int(last_signal_pos) == int(last_closed_pos):
+            info = {"cond": 1, "reason": "Сигнал уже был (persist)"}
+            logger.info("[P1] ❌ persist: prev=%.12f curr=%.12f", prev_ema10 - prev_ema21, curr_ema10 - curr_ema21)
             _flush_handlers()
             return False, info
 
-        # Проверяем ТОЛЬКО текущую последнюю закрытую свечу (last_closed_pos)
-        prev_pos = last_closed_pos - 1
-        if prev_pos < 0:
-            info = {"cond": 1, "reason": "Недостаточно предыдущих данных для проверки пересечения EMA10/21"}
-            logger.info("[P1] ❌ reason=%s values=%s", info["reason"], json.dumps(info, ensure_ascii=False))
-            _flush_handlers()
-            return False, info
+        # Успех — формируем сигнал. Сохраняем и очищаем ожидание.
+        state["waiting"] = False
+        state["start_pos"] = None
+        state["cross_type"] = None
+        state["last_signal_pos"] = int(last_closed_pos)
+        state["last_signal_dir"] = cross_type
+        save_state(state)
 
-        prev_ema10, prev_ema21 = float(ema10.iat[prev_pos]), float(ema21.iat[prev_pos])
-        curr_ema10, curr_ema21 = float(ema10.iat[last_closed_pos]), float(ema21.iat[last_closed_pos])
+        info = {"cond": 1, "start_index": int(start_pos)}
+        logger.info("[P1] ✅ EMA10 пересекла EMA21 | prev=%.12f curr=%.12f", prev_ema10 - prev_ema21, curr_ema10 - curr_ema21)
+        _flush_handlers()
+        return True, info
 
-        # Касание — не сигнал
-        if _is_touch(curr_ema10, curr_ema21):
-            info = {"cond": 1, "reason": "EMA10 коснулась EMA21, ждем следующей свечи"}
-            logger.info("[P1] ❌ reason=%s values=%s", info["reason"], json.dumps(info, ensure_ascii=False))
-            _flush_handlers()
-            return False, info
+    else:
+        # Пока пересечения нет — ждём дальше
+        info = {"cond": 1, "reason": "Ждем подтвержденного пересечения EMA10/21"}
+        logger.info("[P1] ❌ wait: prev=%.12f curr=%.12f", prev_ema10 - prev_ema21, curr_ema10 - curr_ema21)
+        _flush_handlers()
+        return False, info
 
-        # Реальное пересечение
-        if _is_real_cross(prev_ema10, prev_ema21, curr_ema10, curr_ema21, cross_type):
-            # Защита от дублирования (persist) по позиции последней сигнальной свечи
-            if last_signal_pos is not None and last_signal_dir == cross_type and int(last_signal_pos) == int(last_closed_pos):
-                info = {"cond": 1, "reason": "Сигнал уже был (persist)"}
-                logger.info("[P1] ❌ reason=%s values=%s", info["reason"], json.dumps(info, ensure_ascii=False))
-                _flush_handlers()
-                return False, info
-
-            # Успех — формируем сигнал. Сохраняем и очищаем ожидание.
-            state["waiting"] = False
-            state["start_pos"] = None
-            state["cross_type"] = None
-            state["last_signal_pos"] = int(last_closed_pos)
-            state["last_signal_dir"] = cross_type
-            save_state(state)
-
-            info = {"cond": 1, "start_index": int(start_pos)}
-            logger.info("[P1] ✅ reason=%s values=%s", "EMA10 пересекла EMA21, сигнал готов", json.dumps(info, ensure_ascii=False))
-            _flush_handlers()
-            return True, info
-        else:
-            # Пока пересечения нет — ждём дальше (до timeout)
-            info = {"cond": 1, "reason": "Ждем подтвержденного пересечения EMA10/21"}
-            logger.info("[P1] ❌ reason=%s values=%s", info["reason"], json.dumps(info, ensure_ascii=False))
-            _flush_handlers()
-            return False, info
-
-    # Если не в ожидании — no_start
-    info = {"cond": 1, "reason": "no_start"}
-    logger.info("[P1] SUMMARY: no_start | impulse_tf=None | direction=None")
-    logger.info("[P1] ❌ reason=%s values=%s", info["reason"], json.dumps(info, ensure_ascii=False))
-    _flush_handlers()
-    return False, info
+# Если не в ожидании — no_start
+info = {"cond": 1, "reason": "no_start"}
+logger.info("[P1] SUMMARY: no_start | impulse_tf=None | direction=None")
+logger.info("[P1] ❌ reason=%s values=%s", info["reason"], json.dumps(info, ensure_ascii=False))
+_flush_handlers()
+return False, info
